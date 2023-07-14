@@ -31,7 +31,7 @@ EXT_TOOLS_DIR = ext-tools/$(OS)
 
 BUILD_LDFLAGS = -X $(PACKAGE_NAME)/lib/utils.BuildHash=$(PACKAGE_VERSION)
 GO_FLAGS = -gcflags '-N -l' -ldflags "$(BUILD_LDFLAGS)"
-GO_VERSION = 1.14
+GO_VERSION = 1.20
 
 REGISTRY ?= gcr.io/uber-container-tools
 
@@ -60,9 +60,11 @@ $(ALL_SRC): ;
 
 # TODO(pourchet): Remove this hack to make dep more reliable. For some reason `go mod download`
 # fails sometimes on TravisCI, so run it a few times if it fails.
-vendor: go.mod go.sum
-	go mod download || go mod download || go mod download
+vendor:
+	go mod download
+	go mod verify
 	go mod vendor
+	go mod tidy
 
 ext-tools: vendor $(EXT_TOOLS)
 

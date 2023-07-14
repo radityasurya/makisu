@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime"
+	"runtime"
 )
 
 const (
@@ -29,6 +30,9 @@ const (
 
 	// MediaTypeLayer is the mediaType used for layers referenced by the manifest.
 	MediaTypeLayer = "application/vnd.docker.image.rootfs.diff.tar.gzip"
+
+	// MediaTypeManifestList is the “fat manifest” which points to specific image manifests for one or more platforms.
+	MediaTypeManifestList = "application/vnd.docker.distribution.manifest.list.v2+json"
 )
 
 // DistributionManifest defines a schema2 manifest. It's used for docker pull and docker push.
@@ -44,6 +48,23 @@ type DistributionManifest struct {
 
 	// Layers lists descriptors for all referenced layers, starting from base layer.
 	Layers []Descriptor `json:"layers"`
+}
+
+type ManifestList struct {
+	SchemaVersion int                `json:"schemaVersion"`
+	MediaType     string             `json:"mediaType"`
+	Manifests     []ManifestListItem `json:"manifests"`
+}
+
+type ManifestListItem struct {
+	Digest    string `json:"digest"`
+	MediaType string `json:"mediaType"`
+	Size      int    `json:"size"`
+	Platform  struct {
+		Architecture string `json:"architecture"`
+		OS           string `json:"os"`
+		Variant      string `json:"variant,omitempty"`
+	} `json:"platform"`
 }
 
 // Descriptor describes targeted content.
@@ -66,6 +87,25 @@ type Descriptor struct {
 type DigestPair struct {
 	TarDigest      Digest
 	GzipDescriptor Descriptor
+}
+
+func UnmarshalManifestList(p []byte) (ManifestListItem, error) {
+	manifestList := ManifestList{}
+	if err := json.Unmarshal(p, &manifestList); err != nil {
+		return ManifestListItem{}, err
+	}
+
+	// List all available manifest
+	for _, manifest := range manifestList.Manifests {
+		fmt.Printf("[%s - %s] Manifest Digest: %s\n", manifest.Platform.OS, manifest.Platform.Architecture, manifest.Digest)
+	}
+
+	selectedManifest, err := selectManifestFromList(manifestList)
+	if err != nil {
+		return ManifestListItem{}, err
+	}
+
+	return selectedManifest, nil
 }
 
 // UnmarshalDistributionManifest verifies MediaType and unmarshals manifest.
@@ -116,4 +156,17 @@ func (manifest DistributionManifest) GetConfigDigest() Digest {
 // NewEmptyDescriptor returns a 0 value descriptor.
 func NewEmptyDescriptor() Descriptor {
 	return Descriptor{Digest: Digest("")}
+}
+
+func selectManifestFromList(manifestList ManifestList) (ManifestListItem, error) {
+	currentOS := runtime.GOOS
+	currentArchitecture := runtime.GOARCH
+
+	for _, manifest := range manifestList.Manifests {
+		if manifest.Platform.Architecture == currentArchitecture && manifest.Platform.OS == currentOS {
+			fmt.Printf("\nSelected Manifest: [%s - %s] %s", manifest.Platform.OS, manifest.Platform.Architecture, manifest.Digest)
+			return manifest, nil
+		}
+	}
+	return ManifestListItem{}, fmt.Errorf("no manifest matching the desired platform found")
 }

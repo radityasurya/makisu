@@ -41,6 +41,8 @@ const (
 	baseManifestQuery = "http://%s/v2/%s/manifests/%s"
 	baseLayerQuery    = "http://%s/v2/%s/blobs/%s"
 	baseStartQuery    = "http://%s/v2/%s/blobs/uploads/"
+
+	publicECRAddress = "public.ecr.aws"
 )
 
 // Client is the interface through which we can interact with a docker registry. It is used when
@@ -220,6 +222,7 @@ func (c DockerRegistryClient) PullManifest(tag string) (*image.DistributionManif
 	}
 
 	URL := fmt.Sprintf(baseManifestQuery, c.registry, c.repository, tag)
+	fmt.Println("Registry: ", c.registry)
 	resp, err := httputil.Send(
 		"GET",
 		URL,
@@ -243,12 +246,57 @@ func (c DockerRegistryClient) PullManifest(tag string) (*image.DistributionManif
 	if err != nil {
 		return nil, fmt.Errorf("read resp body: %s", err)
 	}
+
 	// Parse the manifest according to the content type.
 	ctHeader := resp.Header.Get("Content-Type")
-	manifest, _, err := image.UnmarshalDistributionManifest(ctHeader, body)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal distribution manifest: %s", err)
+	manifest := image.DistributionManifest{}
+	if c.registry != publicECRAddress {
+		manifest, _, err = image.UnmarshalDistributionManifest(ctHeader, body)
+		if err != nil {
+			return nil, fmt.Errorf("unmarshal distribution manifest: %s", err)
+		}
+	} else {
+		manifestList, err := image.UnmarshalManifestList(body)
+		if err != nil {
+			return nil, fmt.Errorf("unmarshal manifest list: %s", err)
+		}
+
+		// fetch selected manifest digest
+		URL := fmt.Sprintf(baseManifestQuery, c.registry, c.repository, manifestList.Digest)
+		fmt.Printf("\nFetching: %s\n", URL)
+		resp, err := httputil.Send(
+			"GET",
+			URL,
+			httputil.SendClient(c.client),
+			opt,
+			httputil.SendTimeout(c.config.Timeout),
+			c.config.sendRetry(),
+			httputil.SendAcceptedCodes(http.StatusOK, http.StatusNotFound, http.StatusBadRequest),
+			httputil.SendHeaders(map[string]string{"Accept": image.MediaTypeManifest}))
+		if err != nil {
+			return nil, fmt.Errorf("http send error: %s", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest {
+			return nil, fmt.Errorf("manifest not found")
+		} else if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("bad pull manifest request resp code: %d", resp.StatusCode)
+		}
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read resp body: %s", err)
+		}
+
+		// Parse the manifest according to the content type.
+		ctHeader := resp.Header.Get("Content-Type")
+		fmt.Printf("\nContent-Type: %s\n", ctHeader)
+		manifest, _, err = image.UnmarshalDistributionManifest(ctHeader, body)
+		if err != nil {
+			return nil, fmt.Errorf("unmarshal distribution manifest: %s", err)
+		}
 	}
+
 	return &manifest, nil
 }
 
